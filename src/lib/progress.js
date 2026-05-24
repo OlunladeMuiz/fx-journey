@@ -1,7 +1,19 @@
-import { TOTAL_CONCEPTS, WEEKS } from "../data/curriculum";
+import { PHASES, TOTAL_CONCEPTS, WEEKS } from "../data/curriculum";
 
 export function conceptKey(weekId, conceptIndex) {
   return `${weekId}-${conceptIndex}`;
+}
+
+export function getWeekById(weekId) {
+  return WEEKS.find((week) => week.id === weekId) || null;
+}
+
+export function getPhaseById(phaseId) {
+  return PHASES.find((phase) => phase.id === phaseId) || null;
+}
+
+export function getPhaseWeeks(phaseId) {
+  return WEEKS.filter((week) => week.phaseId === phaseId);
 }
 
 export function weekProgress(weekId, concepts, completedMap) {
@@ -24,6 +36,24 @@ export function totalProgress(completedMap) {
     total: TOTAL_CONCEPTS,
     percent: TOTAL_CONCEPTS ? Math.round((done / TOTAL_CONCEPTS) * 100) : 0,
   };
+}
+
+export function phaseProgress(phaseId, completedMap) {
+  const phaseWeeks = WEEKS.filter((week) => week.phaseId === phaseId);
+  const total = phaseWeeks.reduce((sum, week) => sum + week.concepts.length, 0);
+  const done = phaseWeeks.reduce((sum, week) => {
+    return sum + week.concepts.reduce((inner, _concept, index) => (completedMap[conceptKey(week.id, index)] ? inner + 1 : inner), 0);
+  }, 0);
+
+  return {
+    done,
+    total,
+    percent: total ? Math.round((done / total) * 100) : 0,
+  };
+}
+
+export function getContinueWeek(completedMap) {
+  return WEEKS.find((week) => weekProgress(week.id, week.concepts, completedMap) < 100) || WEEKS[WEEKS.length - 1];
 }
 
 export function getCurrentWeekLabel(completedMap) {

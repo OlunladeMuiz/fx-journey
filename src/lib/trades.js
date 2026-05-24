@@ -56,6 +56,6 @@ export function tradeStatsForWeek(trades, weekId) {
 
   return [
     { label: "Win Rate", value: `${winRate}%` },
-    { label: "Avg RR", value: rrValues.length ? `${formatDecimal(avgRR, 2)}R` : "—" },
+    { label: "Avg RR", value: rrValues.length ? `${formatDecimal(avgRR, 2)}R` : "-" },
   ];
 }

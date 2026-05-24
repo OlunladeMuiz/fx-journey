@@ -1,31 +1,23 @@
 import React, { useEffect, useRef, useState } from "react";
-import { CoachDrawer, CoachLauncher, JournalDrawer, QuizModal } from "./components/Overlays";
-import Header from "./components/Header";
-import { FooterBar, PhaseSelector, SearchBar, SearchResults, SplashScreen, TickerBar } from "./components/Chrome";
-import { DailyLoopSection, IronRulesSection } from "./components/Sections";
-import WeekCard from "./components/WeekCard";
-import { PHASES, STORAGE_KEYS, TICKER_ITEMS, WEEKS } from "./data/curriculum";
+import { CoachDrawer, CoachLauncher, QuizModal } from "./components/Overlays";
+import { BottomNav, DashboardView, JournalView, PatternLibraryView, PhaseOverviewView, PhaseView, WeekDetailView } from "./components/Routes";
+import { FooterBar, SplashScreen, TickerBar } from "./components/Chrome";
+import { PHASES, PATTERN_LIBRARY, STORAGE_KEYS, TICKER_ITEMS, WEEKS } from "./data/curriculum";
 import { dateKey } from "./lib/date";
-import { conceptKey, getCurrentWeekLabel, getRecentCompletedConcepts, totalProgress, weekProgress } from "./lib/progress";
+import { conceptKey, getContinueWeek, getCurrentWeekLabel, getRecentCompletedConcepts, getWeekById, totalProgress, weekProgress } from "./lib/progress";
 import { calculateTradeMetrics, toNumber } from "./lib/trades";
 import { createFallbackQuiz, fallbackCoachMessage, fetchAnthropicCoachReply, fetchAnthropicQuiz, fetchQuizMotivation, makeCoachSystemPrompt } from "./lib/ai";
-import { safeParseJSON, storageGet, storageSet } from "./hooks/useStorage";
+import { resolveRoute, withQuery } from "./lib/router";
+import { safeParseJSON, storageDelete, storageGet, storageKeys, storageSet } from "./hooks/useStorage";
 import { useStreak } from "./hooks/useStreak";
 
 const STARTER_COACH_MESSAGE = {
   id: "welcome",
   role: "assistant",
-  content:
-    "I am ready. Bring me the week, the candle story, or the rule you keep breaking, and we will work it through.",
+  content: "I am ready. Bring me the week, the candle story, or the rule you keep breaking, and we will work it through.",
 };
 
-const DEFAULT_JOURNAL_DRAFT = {
-  patternFound: "",
-  chartNote: "",
-  imageUrl: "",
-  outcome: "pending",
-  date: "",
-};
+const DEFAULT_WEEK_ID = WEEKS[0]?.id || "";
 
 function createDefaultTradeDrafts() {
   return WEEKS.reduce((acc, week) => {
@@ -41,6 +33,20 @@ function createDefaultTradeDrafts() {
     };
     return acc;
   }, {});
+}
+
+function createJournalDraft(weekId = DEFAULT_WEEK_ID) {
+  return {
+    weekId,
+    pair: "EUR/USD",
+    setup: "",
+    entry: "",
+    sl: "",
+    tp: "",
+    outcome: "OPEN",
+    screenshotUrl: "",
+    notes: "",
+  };
 }
 
 function createEmptyQuizState() {
@@ -74,42 +80,212 @@ function createQuizStateFromQuestions(week, questions, error = "") {
   };
 }
 
-function normalizeTradeDraft(draft, week) {
-  const metrics = calculateTradeMetrics(draft);
+function normalizeStoredTradeEntry(entry) {
+  const week = getWeekById(entry.weekId) || WEEKS[0];
+  const normalized = {
+    ...entry,
+    id: String(entry.id || `trade-${Date.now()}`),
+    weekId: week.id,
+    weekLabel: `Week ${week.week}`,
+    pair: entry.pair || "EUR/USD",
+    direction: entry.direction || "BUY",
+    entry: entry.entry === "" || entry.entry == null ? "" : entry.entry,
+    sl: entry.sl === "" || entry.sl == null ? "" : entry.sl,
+    tp: entry.tp === "" || entry.tp == null ? "" : entry.tp,
+    outcome: entry.outcome || "OPEN",
+    pattern: entry.pattern || entry.setup || week.title,
+    setup: entry.setup || entry.pattern || week.title,
+    notes: entry.notes || "",
+    screenshotUrl: entry.screenshotUrl || "",
+    createdAt: Number(entry.createdAt) || Date.now(),
+  };
+
+  const metrics = calculateTradeMetrics(normalized);
+  return {
+    ...normalized,
+    pips: Number.isFinite(Number(entry.pips)) ? Number(entry.pips) : metrics.pips,
+    rr: Number.isFinite(Number(entry.rr)) ? Number(entry.rr) : metrics.rr,
+  };
+}
+
+function buildTradeEntryFromDraft(draft, week) {
+  const base = {
+    pair: draft.pair,
+    direction: draft.direction || "BUY",
+    entry: draft.entry,
+    sl: draft.sl,
+    tp: draft.tp,
+    outcome: draft.outcome,
+    pattern: (draft.pattern || draft.setup || week.title).trim(),
+    setup: (draft.pattern || draft.setup || week.title).trim(),
+    notes: draft.notes || "",
+    screenshotUrl: draft.screenshotUrl || "",
+    weekId: week.id,
+  };
+
+  const metrics = calculateTradeMetrics(base);
   return {
     id: `trade-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`,
     weekId: week.id,
-    pair: draft.pair,
-    direction: draft.direction,
-    entry: draft.entry === "" ? "" : toNumber(draft.entry),
-    sl: draft.sl === "" ? "" : toNumber(draft.sl),
-    tp: draft.tp === "" ? "" : toNumber(draft.tp),
-    outcome: draft.outcome,
+    weekLabel: `Week ${week.week}`,
+    pair: base.pair,
+    direction: base.direction,
+    entry: base.entry === "" ? "" : toNumber(base.entry),
+    sl: base.sl === "" ? "" : toNumber(base.sl),
+    tp: base.tp === "" ? "" : toNumber(base.tp),
+    outcome: base.outcome,
+    pattern: base.pattern,
+    setup: base.setup,
+    notes: base.notes.trim(),
+    screenshotUrl: base.screenshotUrl.trim ? base.screenshotUrl.trim() : base.screenshotUrl,
     pips: metrics.pips,
     rr: metrics.rr,
-    notes: draft.notes.trim(),
-    pattern: draft.pattern.trim(),
     date: dateKey(),
     createdAt: Date.now(),
   };
 }
 
+function buildJournalEntryFromDraft(draft) {
+  const week = getWeekById(draft.weekId) || WEEKS[0];
+  return buildTradeEntryFromDraft(
+    {
+      pair: draft.pair,
+      direction: "BUY",
+      entry: draft.entry,
+      sl: draft.sl,
+      tp: draft.tp,
+      outcome: draft.outcome,
+      pattern: draft.setup,
+      setup: draft.setup,
+      notes: draft.notes,
+      screenshotUrl: draft.screenshotUrl,
+    },
+    week
+  );
+}
+
+function sortEntriesDesc(entries) {
+  return [...entries].sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+}
+
+async function loadProgressMap() {
+  const keys = await storageKeys(STORAGE_KEYS.progressPrefix);
+  if (keys.length > 0) {
+    const map = {};
+    keys.forEach((key) => {
+      map[key.slice(STORAGE_KEYS.progressPrefix.length)] = true;
+    });
+    return map;
+  }
+
+  const legacyRaw = await storageGet(STORAGE_KEYS.legacyProgress);
+  const legacyMap = safeParseJSON(legacyRaw, {});
+  if (!legacyMap || typeof legacyMap !== "object") return {};
+
+  const next = {};
+  const writes = [];
+  Object.entries(legacyMap).forEach(([key, value]) => {
+    if (value) {
+      next[key] = true;
+      writes.push(storageSet(`${STORAGE_KEYS.progressPrefix}${key}`, "1"));
+    }
+  });
+  await Promise.all(writes);
+  return next;
+}
+
+async function loadTrades() {
+  const keys = await storageKeys(STORAGE_KEYS.journalPrefix);
+  if (keys.length > 0) {
+    const loaded = await Promise.all(
+      keys.map(async (key) => {
+        const raw = await storageGet(key);
+        const entry = safeParseJSON(raw, null);
+        if (!entry || typeof entry !== "object") return null;
+        return normalizeStoredTradeEntry({
+          ...entry,
+          id: entry.id || key.slice(STORAGE_KEYS.journalPrefix.length),
+        });
+      })
+    );
+    return sortEntriesDesc(loaded.filter(Boolean));
+  }
+
+  const legacyRaw = (await storageGet(STORAGE_KEYS.legacyTrades)) || (await storageGet(STORAGE_KEYS.legacyJournal));
+  const legacyEntries = safeParseJSON(legacyRaw, []);
+  if (!Array.isArray(legacyEntries)) return [];
+
+  const next = legacyEntries.map((entry) => normalizeStoredTradeEntry(entry));
+  await Promise.all(next.map((entry) => storageSet(`${STORAGE_KEYS.journalPrefix}${entry.id}`, JSON.stringify(entry))));
+  return sortEntriesDesc(next);
+}
+
+async function loadQuizScores() {
+  const keys = await storageKeys(STORAGE_KEYS.quizScorePrefix);
+  if (keys.length > 0) {
+    const map = {};
+    await Promise.all(
+      keys.map(async (key) => {
+        const raw = await storageGet(key);
+        const value = Number(safeParseJSON(raw, raw));
+        if (Number.isFinite(value)) {
+          map[key.slice(STORAGE_KEYS.quizScorePrefix.length)] = value;
+        }
+      })
+    );
+    return map;
+  }
+
+  const legacyRaw = await storageGet(STORAGE_KEYS.legacyQuizScores);
+  const legacyMap = safeParseJSON(legacyRaw, {});
+  if (!legacyMap || typeof legacyMap !== "object") return {};
+
+  const next = {};
+  const writes = [];
+  Object.entries(legacyMap).forEach(([weekId, score]) => {
+    const value = Number(score);
+    if (Number.isFinite(value)) {
+      next[weekId] = value;
+      writes.push(storageSet(`${STORAGE_KEYS.quizScorePrefix}${weekId}`, JSON.stringify(value)));
+    }
+  });
+  await Promise.all(writes);
+  return next;
+}
+
+async function loadPatternConfidence() {
+  const keys = await storageKeys(STORAGE_KEYS.patternConfidencePrefix);
+  const map = {};
+  if (keys.length === 0) return map;
+
+  await Promise.all(
+    keys.map(async (key) => {
+      const raw = await storageGet(key);
+      const value = Number(safeParseJSON(raw, raw));
+      if (Number.isFinite(value)) {
+        map[key.slice(STORAGE_KEYS.patternConfidencePrefix.length)] = value;
+      }
+    })
+  );
+  return map;
+}
+
 export default function App() {
+  const initialRoute = typeof window !== "undefined" ? resolveRoute(window.location.pathname, window.location.search) : resolveRoute("/", "");
+
   const [loaded, setLoaded] = useState(false);
   const [loadMessage, setLoadMessage] = useState("");
   const [splashVisible, setSplashVisible] = useState(true);
   const [completed, setCompleted] = useState({});
-  const [journalEntries, setJournalEntries] = useState([]);
   const [trades, setTrades] = useState([]);
   const [quizScores, setQuizScores] = useState({});
+  const [patternConfidence, setPatternConfidence] = useState({});
   const [activePhaseId, setActivePhaseId] = useState(PHASES[0].id);
-  const [openWeeks, setOpenWeeks] = useState({ w1: true });
+  const [openWeeks, setOpenWeeks] = useState({ [DEFAULT_WEEK_ID]: true });
   const [searchQuery, setSearchQuery] = useState("");
   const [pendingScrollKey, setPendingScrollKey] = useState("");
   const [tradeDrafts, setTradeDrafts] = useState(createDefaultTradeDrafts);
-  const [journalOpen, setJournalOpen] = useState(false);
-  const [journalWeek, setJournalWeek] = useState(null);
-  const [journalDraft, setJournalDraft] = useState(DEFAULT_JOURNAL_DRAFT);
+  const [journalDraft, setJournalDraft] = useState(() => createJournalDraft(DEFAULT_WEEK_ID));
   const [quizState, setQuizState] = useState(createEmptyQuizState);
   const [coachOpen, setCoachOpen] = useState(false);
   const [coachMessages, setCoachMessages] = useState([]);
@@ -117,13 +293,19 @@ export default function App() {
   const [coachLoading, setCoachLoading] = useState(false);
   const [coachError, setCoachError] = useState("");
   const [coachResetNotice, setCoachResetNotice] = useState("");
+  const [routeState, setRouteState] = useState(initialRoute);
 
   const conceptRefs = useRef({});
   const coachThreadRef = useRef(null);
   const { streak, markActive } = useStreak();
 
-  const activePhase = PHASES.find((phase) => phase.id === activePhaseId) || PHASES[0];
-  const visibleWeeks = activePhase.weeks;
+  const continueWeek = getContinueWeek(completed);
+  const dashboardPhase = PHASES.find((phase) => phase.id === continueWeek.phaseId) || PHASES[0];
+  const selectedPhase = PHASES.find((phase) => phase.id === activePhaseId) || dashboardPhase;
+  const routeWeek = routeState.route === "week" ? getWeekById(routeState.params.weekId) : null;
+  const routePhase = routeState.route === "phase" ? PHASES.find((phase) => phase.id === routeState.params.phaseId) || selectedPhase : routeWeek ? PHASES.find((phase) => phase.id === routeWeek.phaseId) || selectedPhase : selectedPhase;
+  const activePhase = routeState.route === "dashboard" ? dashboardPhase : routePhase;
+  const visibleWeeks = selectedPhase.weeks;
   const progressSummary = totalProgress(completed);
   const currentWeek = getCurrentWeekLabel(completed);
   const recentConcepts = getRecentCompletedConcepts(completed);
@@ -146,33 +328,37 @@ export default function App() {
     : [];
 
   useEffect(() => {
+    const onPopState = () => {
+      setRouteState(resolveRoute(window.location.pathname, window.location.search));
+    };
+
+    window.addEventListener("popstate", onPopState);
+    return () => window.removeEventListener("popstate", onPopState);
+  }, []);
+
+  useEffect(() => {
     let cancelled = false;
 
     (async () => {
       try {
-        const [progressRaw, journalRaw, tradesRaw, quizRaw] = await Promise.all([
-          storageGet(STORAGE_KEYS.progress),
-          storageGet(STORAGE_KEYS.journal),
-          storageGet(STORAGE_KEYS.trades),
-          storageGet(STORAGE_KEYS.quizScores),
+        const [progressMap, loadedTrades, loadedScores, loadedConfidence] = await Promise.all([
+          loadProgressMap(),
+          loadTrades(),
+          loadQuizScores(),
+          loadPatternConfidence(),
         ]);
 
-        const progressMap = safeParseJSON(progressRaw, {});
-        const journal = safeParseJSON(journalRaw, []);
-        const tradeLogs = safeParseJSON(tradesRaw, []);
-        const scores = safeParseJSON(quizRaw, {});
-
         if (!cancelled) {
-          setCompleted(progressMap && typeof progressMap === "object" ? progressMap : {});
-          setJournalEntries(Array.isArray(journal) ? journal : []);
-          setTrades(Array.isArray(tradeLogs) ? tradeLogs.slice(-500) : []);
-          setQuizScores(scores && typeof scores === "object" ? scores : {});
+          setCompleted(progressMap);
+          setTrades(loadedTrades.slice(0, 500));
+          setQuizScores(loadedScores);
+          setPatternConfidence(loadedConfidence);
           setTradeDrafts(createDefaultTradeDrafts());
-          setJournalDraft({
-            ...DEFAULT_JOURNAL_DRAFT,
-            date: dateKey(),
-          });
-          setOpenWeeks({ w1: true });
+
+          const currentContinueWeek = getContinueWeek(progressMap);
+          setJournalDraft(createJournalDraft(currentContinueWeek.id));
+          setActivePhaseId(currentContinueWeek.phaseId);
+          setOpenWeeks({ [currentContinueWeek.id]: true });
           setLoadMessage("");
         }
       } catch {
@@ -195,16 +381,23 @@ export default function App() {
     const timer = setTimeout(() => {
       setSplashVisible(false);
     }, 1600);
-
     return () => clearTimeout(timer);
   }, []);
+
+  useEffect(() => {
+    if (routeState.route === "phase" && routeState.params.phaseId) {
+      setActivePhaseId(routeState.params.phaseId);
+    } else if (routeState.route === "week" && routeWeek) {
+      setActivePhaseId(routeWeek.phaseId);
+    }
+  }, [routeState.route, routeState.params.phaseId, routeState.params.weekId]);
 
   useEffect(() => {
     const phaseHasOpen = visibleWeeks.some((week) => openWeeks[week.id]);
     if (!phaseHasOpen && visibleWeeks[0]) {
       setOpenWeeks((previous) => ({ ...previous, [visibleWeeks[0].id]: true }));
     }
-  }, [activePhaseId]);
+  }, [selectedPhase.id]);
 
   useEffect(() => {
     if (!pendingScrollKey) return undefined;
@@ -218,7 +411,39 @@ export default function App() {
       setPendingScrollKey("");
     }, 80);
     return () => clearTimeout(timer);
-  }, [pendingScrollKey, openWeeks, activePhaseId, searchQuery]);
+  }, [pendingScrollKey, routeState.route, routeState.params.weekId, searchQuery]);
+
+  useEffect(() => {
+    if (routeState.route !== "week" || !routeWeek) return undefined;
+
+    function handleKeyDown(event) {
+      if (event.defaultPrevented || event.ctrlKey || event.metaKey || event.altKey) return;
+      if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+
+      const target = event.target;
+      if (
+        target &&
+        target instanceof HTMLElement &&
+        (target.isContentEditable ||
+          ["INPUT", "TEXTAREA", "SELECT", "BUTTON"].includes(target.tagName))
+      ) {
+        return;
+      }
+
+      const currentIndex = WEEKS.findIndex((week) => week.id === routeWeek.id);
+      if (currentIndex === -1) return;
+
+      const nextIndex = event.key === "ArrowLeft" ? currentIndex - 1 : currentIndex + 1;
+      const nextWeek = WEEKS[nextIndex];
+      if (!nextWeek) return;
+
+      event.preventDefault();
+      void navigate(`/weeks/${nextWeek.id}`);
+    }
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [routeState.route, routeWeek?.id]);
 
   useEffect(() => {
     if (!coachOpen) return undefined;
@@ -246,26 +471,69 @@ export default function App() {
     return () => clearTimeout(timer);
   }, [coachResetNotice]);
 
+  async function navigate(path, options = {}) {
+    const { replace = false } = options;
+    const current = `${window.location.pathname}${window.location.search}`;
+    if (current === path) return;
+    if (replace) {
+      window.history.replaceState({}, "", path);
+    } else {
+      window.history.pushState({}, "", path);
+    }
+    setRouteState(resolveRoute(window.location.pathname, window.location.search));
+  }
+
   async function persistProgressMap(nextMap) {
     setCompleted(nextMap);
-    await storageSet(STORAGE_KEYS.progress, JSON.stringify(nextMap));
+    const writes = [];
+
+    WEEKS.forEach((week) => {
+      week.concepts.forEach((_, conceptIndex) => {
+        const key = conceptKey(week.id, conceptIndex);
+        const storageKey = `${STORAGE_KEYS.progressPrefix}${key}`;
+        if (nextMap[key]) {
+          writes.push(storageSet(storageKey, "1"));
+        } else {
+          writes.push(storageDelete(storageKey));
+        }
+      });
+    });
+
+    await Promise.all(writes);
   }
 
   async function persistTrades(nextTrades) {
-    const pruned = nextTrades.slice(-500);
+    const pruned = sortEntriesDesc(nextTrades).slice(0, 500);
     setTrades(pruned);
-    await storageSet(STORAGE_KEYS.trades, JSON.stringify(pruned));
-  }
 
-  async function persistJournal(nextJournal) {
-    const pruned = nextJournal.slice(-250);
-    setJournalEntries(pruned);
-    await storageSet(STORAGE_KEYS.journal, JSON.stringify(pruned));
+    const existingKeys = await storageKeys(STORAGE_KEYS.journalPrefix);
+    const activeKeys = new Set(pruned.map((entry) => `${STORAGE_KEYS.journalPrefix}${entry.id}`));
+    const writes = existingKeys
+      .filter((key) => !activeKeys.has(key))
+      .map((key) => storageDelete(key))
+      .concat(pruned.map((entry) => storageSet(`${STORAGE_KEYS.journalPrefix}${entry.id}`, JSON.stringify(entry))));
+
+    await Promise.all(writes);
   }
 
   async function persistQuizScores(nextScores) {
     setQuizScores(nextScores);
-    await storageSet(STORAGE_KEYS.quizScores, JSON.stringify(nextScores));
+    const writes = WEEKS.map((week) => {
+      const value = nextScores[week.id];
+      const key = `${STORAGE_KEYS.quizScorePrefix}${week.id}`;
+      return value == null ? storageDelete(key) : storageSet(key, JSON.stringify(value));
+    });
+    await Promise.all(writes);
+  }
+
+  async function persistPatternConfidence(nextMap) {
+    setPatternConfidence(nextMap);
+    const writes = PATTERN_LIBRARY.map((item) => {
+      const value = nextMap[item.id];
+      const key = `${STORAGE_KEYS.patternConfidencePrefix}${item.id}`;
+      return value == null ? storageDelete(key) : storageSet(key, JSON.stringify(value));
+    });
+    await Promise.all(writes);
   }
 
   function registerConceptRef(key, node) {
@@ -310,20 +578,23 @@ export default function App() {
 
   function handleSearchSelect(result) {
     setActivePhaseId(result.phaseId);
-    openWeek(result.weekId);
     setPendingScrollKey(conceptKey(result.weekId, result.conceptIndex));
+    void navigate(`/weeks/${result.weekId}`);
   }
 
   function openJournalForWeek(week) {
-    setJournalWeek(week);
     setJournalDraft({
-      patternFound: week.title,
-      chartNote: "",
-      imageUrl: "",
-      outcome: "pending",
-      date: dateKey(),
+      weekId: week.id,
+      pair: "EUR/USD",
+      setup: week.title,
+      entry: "",
+      sl: "",
+      tp: "",
+      outcome: "OPEN",
+      screenshotUrl: "",
+      notes: "",
     });
-    setJournalOpen(true);
+    void navigate(withQuery("/journal", { week: week.id }));
   }
 
   function updateJournalDraft(field, value) {
@@ -332,26 +603,14 @@ export default function App() {
 
   async function submitJournal(event) {
     event.preventDefault();
-    if (!journalWeek) return;
+    const week = getWeekById(journalDraft.weekId) || WEEKS[0];
+    if (!week) return;
 
-    const entry = {
-      id: `journal-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`,
-      weekId: journalWeek.id,
-      date: journalDraft.date || dateKey(),
-      patternFound: journalDraft.patternFound.trim(),
-      chartNote: journalDraft.chartNote.trim(),
-      imageUrl: journalDraft.imageUrl.trim() || undefined,
-      outcome: journalDraft.outcome,
-      createdAt: Date.now(),
-    };
-
-    await persistJournal([...journalEntries, entry]);
+    const entry = buildJournalEntryFromDraft(journalDraft);
+    await persistTrades([...trades, entry]);
     await markActive();
-    setJournalDraft({
-      ...DEFAULT_JOURNAL_DRAFT,
-      patternFound: journalWeek.title,
-      date: dateKey(),
-    });
+    setJournalDraft(createJournalDraft(week.id));
+    void navigate(withQuery("/journal", { week: week.id }));
   }
 
   function updateTradeDraft(weekId, field, value) {
@@ -367,7 +626,7 @@ export default function App() {
   async function submitTrade(event, week) {
     event.preventDefault();
     const draft = tradeDrafts[week.id];
-    const trade = normalizeTradeDraft(draft, week);
+    const trade = buildTradeEntryFromDraft(draft, week);
     await persistTrades([...trades, trade]);
     await markActive();
     setTradeDrafts((previous) => ({
@@ -549,8 +808,7 @@ export default function App() {
         {
           id: `coach-fallback-${Date.now()}`,
           role: "assistant",
-          content:
-            "Coach is unavailable right now, but the rule still stands: stay with the chart, wait for confirmation, and write the reason down.",
+          content: "Coach is unavailable right now, but the rule still stands: stay with the chart, wait for confirmation, and write the reason down.",
         },
       ]);
     } finally {
@@ -585,6 +843,115 @@ export default function App() {
     );
   }
 
+  let content = null;
+
+  if (routeState.route === "dashboard") {
+    content = (
+      <DashboardView
+        activePhase={dashboardPhase}
+        progressSummary={progressSummary}
+        streak={streak}
+        currentWeek={continueWeek}
+        continueWeek={continueWeek}
+        onContinue={() => navigate(`/weeks/${continueWeek.id}`)}
+        loadMessage={loadMessage}
+      />
+    );
+  } else if (routeState.route === "phases") {
+    content = (
+      <PhaseOverviewView
+        phases={PHASES}
+        completedMap={completed}
+        onEnterPhase={(phaseId) => navigate(`/phases/${phaseId}`)}
+        onNavigate={navigate}
+      />
+    );
+  } else if (routeState.route === "phase") {
+    content = (
+      <PhaseView
+        phase={selectedPhase}
+        phases={PHASES}
+        visibleWeeks={visibleWeeks}
+        completedMap={completed}
+        openWeeks={openWeeks}
+        query={searchQuery}
+        searchResults={searchResults}
+        activePhaseId={activePhaseId}
+        onNavigate={navigate}
+        onPhaseSelect={(phaseId) => {
+          setActivePhaseId(phaseId);
+          navigate(`/phases/${phaseId}`);
+        }}
+        onSearchChange={setSearchQuery}
+        onToggleWeekOpen={toggleWeekOpen}
+        onToggleConcept={toggleConcept}
+        onToggleWeek={toggleWeek}
+        onSearchSelect={handleSearchSelect}
+        onOpenJournal={openJournalForWeek}
+        onStartQuiz={startQuiz}
+        tradeDrafts={tradeDrafts}
+        trades={trades}
+        quizScores={quizScores}
+        registerConceptRef={registerConceptRef}
+        onTradeDraftChange={updateTradeDraft}
+        onTradeSubmit={submitTrade}
+        onTradeOutcomeChange={updateTradeOutcome}
+      />
+    );
+  } else if (routeState.route === "week") {
+    const week = routeWeek || continueWeek;
+    const weekTrades = trades.filter((trade) => trade.weekId === week.id);
+    content = (
+      <WeekDetailView
+        week={week}
+        phase={PHASES.find((phase) => phase.id === week.phaseId) || selectedPhase}
+        completedMap={completed}
+        progress={weekProgress(week.id, week.concepts, completed)}
+        score={quizScores[week.id]}
+        query={searchQuery}
+        tradeDraft={tradeDrafts[week.id]}
+        trades={weekTrades}
+        quizScores={quizScores}
+        onToggleConcept={toggleConcept}
+        onToggleWeek={toggleWeek}
+        onStartQuiz={startQuiz}
+        onOpenJournal={openJournalForWeek}
+        onTradeDraftChange={updateTradeDraft}
+        onTradeSubmit={submitTrade}
+        onTradeOutcomeChange={updateTradeOutcome}
+        registerConceptRef={registerConceptRef}
+        onNavigate={navigate}
+      />
+    );
+  } else if (routeState.route === "journal") {
+    content = (
+      <JournalView
+        entries={trades}
+        draft={journalDraft}
+        weekOptions={WEEKS}
+        onDraftChange={updateJournalDraft}
+        onSubmit={submitJournal}
+        onNavigate={navigate}
+        selectedWeekId={routeState.query.get("week") || ""}
+        queryParams={routeState.query}
+      />
+    );
+  } else if (routeState.route === "patterns") {
+    content = (
+      <PatternLibraryView
+        patterns={PATTERN_LIBRARY}
+        confidenceMap={patternConfidence}
+        onConfidenceChange={(id, value) => {
+          void persistPatternConfidence({
+            ...patternConfidence,
+            [id]: value,
+          });
+        }}
+        onNavigate={navigate}
+      />
+    );
+  }
+
   return (
     <div className="fxj-shell">
       <div className="fxj-bg" />
@@ -592,76 +959,11 @@ export default function App() {
       <TickerBar items={TICKER_ITEMS} />
       {splashOverlay}
 
-      <main className="shell-shell">
-        <Header
-          activePhase={activePhase}
-          progressSummary={progressSummary}
-          streak={streak}
-          currentWeek={currentWeek}
-          loadMessage={loadMessage}
-        />
-
-        <DailyLoopSection />
-        <IronRulesSection />
-
-        <section className="panel panel--stack tracker-panel">
-          <div className="section-head">
-            <div>
-              <div className="section-kicker">TRACKER</div>
-              <h2>12-week curriculum</h2>
-            </div>
-            <p className="section-note">Use the search bar to jump straight into a concept row across either phase.</p>
-          </div>
-
-          <SearchBar value={searchQuery} onChange={setSearchQuery} resultCount={searchResults.length} />
-          <SearchResults query={searchQuery} results={searchResults} onSelect={handleSearchSelect} />
-          <PhaseSelector phases={PHASES} activePhaseId={activePhaseId} onSelect={setActivePhaseId} />
-
-          <div className="week-list">
-            {visibleWeeks.map((week) => (
-              <WeekCard
-                key={week.id}
-                week={week}
-                progress={weekProgress(week.id, week.concepts, completed)}
-                isOpen={Boolean(openWeeks[week.id])}
-                onToggleOpen={() => toggleWeekOpen(week.id)}
-                completedMap={completed}
-                onToggleConcept={toggleConcept}
-                onToggleWeek={toggleWeek}
-                query={searchQuery}
-                score={quizScores[week.id]}
-                onStartQuiz={startQuiz}
-                tradeDraft={tradeDrafts[week.id]}
-                onTradeDraftChange={updateTradeDraft}
-                onTradeSubmit={submitTrade}
-                trades={trades
-                  .filter((trade) => trade.weekId === week.id)
-                  .sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0))}
-                onTradeOutcomeChange={updateTradeOutcome}
-                onOpenJournal={openJournalForWeek}
-                registerConceptRef={registerConceptRef}
-              />
-            ))}
-          </div>
-        </section>
-      </main>
+      {content}
 
       <FooterBar />
-
+      <BottomNav route={routeState.route} onNavigate={navigate} />
       <CoachLauncher onClick={() => setCoachOpen(true)} />
-
-      <JournalDrawer
-        open={journalOpen}
-        week={journalWeek}
-        draft={journalDraft}
-        onClose={() => setJournalOpen(false)}
-        onDraftChange={updateJournalDraft}
-        onSubmit={submitJournal}
-        recentEntries={journalEntries
-          .filter((entry) => journalWeek && entry.weekId === journalWeek.id)
-          .sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0))
-          .slice(0, 5)}
-      />
 
       <QuizModal
         state={quizState}

@@ -1,9 +1,10 @@
 import React from "react";
 import { DAILY_LOOP, IRON_RULES } from "../data/dailyLoop";
+import { joinClassNames } from "../lib/ui";
 
-export function DailyLoopSection() {
+export function DailyLoopSection({ variant = "grid" }) {
   return (
-    <section className="panel panel--stack">
+    <section className={joinClassNames("panel", "panel--stack", variant === "strip" && "daily-loop-panel")}>
       <div className="section-head">
         <div>
           <div className="section-kicker">DAILY LOOP</div>
@@ -11,9 +12,9 @@ export function DailyLoopSection() {
         </div>
         <p className="section-note">Every rep is about seeing the market clearly, then writing it down.</p>
       </div>
-      <div className="loop-grid">
+      <div className={variant === "strip" ? "loop-strip" : "loop-grid"}>
         {DAILY_LOOP.map((step) => (
-          <article key={step.title} className="loop-card">
+          <article key={step.title} className={joinClassNames("loop-card", variant === "strip" && "loop-card--strip")}>
             <div className="loop-card__title">{step.title}</div>
             <p>{step.body}</p>
           </article>

@@ -47,3 +47,46 @@ export async function storageSet(key, value) {
   inMemoryStorage[key] = value;
   return false;
 }
+
+export async function storageDelete(key) {
+  try {
+    if (hasWindow && window.storage && typeof window.storage.delete === "function") {
+      await window.storage.delete(key);
+      return true;
+    }
+
+    if (hasWindow && window.localStorage) {
+      window.localStorage.removeItem(key);
+      return true;
+    }
+  } catch {
+    // fall through to in-memory storage
+  }
+
+  delete inMemoryStorage[key];
+  return false;
+}
+
+export async function storageKeys(prefix = "") {
+  try {
+    if (hasWindow && window.storage && typeof window.storage.keys === "function") {
+      const keys = await window.storage.keys();
+      return Array.isArray(keys) ? keys.filter((key) => key.startsWith(prefix)) : [];
+    }
+
+    if (hasWindow && window.localStorage) {
+      const keys = [];
+      for (let index = 0; index < window.localStorage.length; index += 1) {
+        const key = window.localStorage.key(index);
+        if (key && key.startsWith(prefix)) {
+          keys.push(key);
+        }
+      }
+      return keys;
+    }
+  } catch {
+    // fall through to in-memory storage
+  }
+
+  return Object.keys(inMemoryStorage).filter((key) => key.startsWith(prefix));
+}

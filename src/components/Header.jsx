@@ -1,7 +1,7 @@
 import React from "react";
 import { OverallProgress, StreakBadge } from "./Chrome";
 
-export default function Header({ activePhase, progressSummary, streak, currentWeek, loadMessage }) {
+export default function Header({ activePhase, progressSummary, streak, currentWeek, continueWeek, onContinue, loadMessage }) {
   return (
     <section className="hero panel">
       <div className="hero__copy">
@@ -17,6 +17,14 @@ export default function Header({ activePhase, progressSummary, streak, currentWe
           <span className="hero-badge">Dark terminal system</span>
           <span className="hero-badge">Persistent storage</span>
         </div>
+        {continueWeek && onContinue ? (
+          <div className="hero__cta-row">
+            <button type="button" className="action-button" onClick={onContinue}>
+              Continue Week {continueWeek.week}
+            </button>
+            <span className="hero__cta-copy">Jump straight back into the next unfinished week.</span>
+          </div>
+        ) : null}
         {loadMessage ? <div className="hero__notice">{loadMessage}</div> : null}
       </div>
 

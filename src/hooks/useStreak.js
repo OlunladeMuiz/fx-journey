@@ -3,10 +3,25 @@ import { STORAGE_KEYS } from "../data/curriculum";
 import { dateKey, dayDiff } from "../lib/date";
 import { safeParseJSON, storageGet, storageSet } from "./useStorage";
 
+function normalizeStreakData(raw) {
+  const today = dateKey();
+  const parsed = safeParseJSON(raw, {});
+  const lastDate = typeof parsed.lastDate === "string" ? parsed.lastDate : typeof parsed.lastActive === "string" ? parsed.lastActive : today;
+  const current = Number.isFinite(Number(parsed.current ?? parsed.streak)) ? Number(parsed.current ?? parsed.streak) : 1;
+  const longest = Number.isFinite(Number(parsed.longest)) ? Number(parsed.longest) : current;
+
+  return {
+    current: Math.max(1, current),
+    longest: Math.max(1, longest),
+    lastDate,
+  };
+}
+
 export function useStreak() {
   const [state, setState] = useState({
-    streak: 1,
-    lastActive: dateKey(),
+    current: 1,
+    longest: 1,
+    lastDate: dateKey(),
     loaded: false,
   });
 
@@ -15,19 +30,25 @@ export function useStreak() {
 
     (async () => {
       try {
-        const raw = await storageGet(STORAGE_KEYS.streaks);
-        const parsed = safeParseJSON(raw, { lastActive: dateKey(), streak: 1 });
+        const raw = (await storageGet(STORAGE_KEYS.streak)) || (await storageGet(STORAGE_KEYS.legacyStreak));
+        const parsed = normalizeStreakData(raw);
         const today = dateKey();
-        const lastActive = typeof parsed.lastActive === "string" ? parsed.lastActive : today;
-        const streak = Number.isFinite(Number(parsed.streak)) ? Number(parsed.streak) : 1;
+        const diff = dayDiff(parsed.lastDate, today);
 
-        let next = { lastActive: today, streak: 1 };
-        if (lastActive === today) {
-          next = { lastActive: today, streak: Math.max(1, streak) };
+        let nextCurrent = parsed.current;
+        if (parsed.lastDate === today) {
+          nextCurrent = parsed.current;
+        } else if (diff === 1) {
+          nextCurrent = parsed.current + 1;
         } else {
-          const diff = dayDiff(lastActive, today);
-          next = diff === 1 ? { lastActive: today, streak: Math.max(1, streak) + 1 } : { lastActive: today, streak: 1 };
+          nextCurrent = 1;
         }
+
+        const next = {
+          current: Math.max(1, nextCurrent),
+          longest: Math.max(parsed.longest, Math.max(1, nextCurrent)),
+          lastDate: today,
+        };
 
         if (!cancelled) {
           setState({
@@ -36,12 +57,13 @@ export function useStreak() {
           });
         }
 
-        await storageSet(STORAGE_KEYS.streaks, JSON.stringify(next));
+        await storageSet(STORAGE_KEYS.streak, JSON.stringify(next));
       } catch {
         if (!cancelled) {
           setState({
-            streak: 1,
-            lastActive: dateKey(),
+            current: 1,
+            longest: 1,
+            lastDate: dateKey(),
             loaded: true,
           });
         }
@@ -56,23 +78,26 @@ export function useStreak() {
   const markActive = useCallback(async () => {
     const today = dateKey();
     setState((previous) => {
-      if (previous.lastActive === today) return previous;
+      if (previous.lastDate === today) return previous;
 
-      const diff = dayDiff(previous.lastActive, today);
+      const diff = dayDiff(previous.lastDate, today);
+      const current = diff === 1 ? previous.current + 1 : 1;
       const next = {
-        lastActive: today,
-        streak: diff === 1 ? previous.streak + 1 : 1,
+        current,
+        longest: Math.max(previous.longest, current),
+        lastDate: today,
         loaded: true,
       };
 
-      void storageSet(STORAGE_KEYS.streaks, JSON.stringify({ lastActive: next.lastActive, streak: next.streak }));
+      void storageSet(STORAGE_KEYS.streak, JSON.stringify({ current: next.current, longest: next.longest, lastDate: next.lastDate }));
       return next;
     });
   }, []);
 
   return {
-    streak: state.streak,
-    lastActive: state.lastActive,
+    streak: state.current,
+    longestStreak: state.longest,
+    lastActive: state.lastDate,
     loaded: state.loaded,
     markActive,
   };

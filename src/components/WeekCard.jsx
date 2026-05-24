@@ -35,6 +35,8 @@ export default function WeekCard({
   onTradeOutcomeChange,
   onOpenJournal,
   registerConceptRef,
+  onOpenWeek,
+  showTradeLog = true,
 }) {
   const isComplete = progress === 100;
   const visibleConcepts = week.concepts.filter((concept) => {
@@ -47,7 +49,7 @@ export default function WeekCard({
 
   return (
     <article
-      className={joinClassNames("week-card", isComplete && "week-card--complete")}
+      className={joinClassNames("week-card", isComplete && "week-card--complete", !showTradeLog && "week-card--detail")}
       style={{
         "--phase-color": week.phaseColor,
         "--phase-glow": week.phaseGlow,
@@ -61,11 +63,16 @@ export default function WeekCard({
           <div className="week-card__title-block">
             <div className="week-card__title-row">
               <h3>{week.title}</h3>
-              {score ? <span className="quiz-badge">QUIZ {score}/5</span> : null}
+              {score != null ? <span className="quiz-badge">QUIZ {score}/5</span> : null}
+              {onOpenWeek ? (
+                <button type="button" className="text-button week-card__detail-button" onClick={() => onOpenWeek(week)}>
+                  OPEN WEEK
+                </button>
+              ) : null}
             </div>
             <div className="week-card__meta">
               <span>{week.pages}</span>
-              <span>•</span>
+              <span>-</span>
               <span>{week.phaseSubtitle}</span>
             </div>
           </div>
@@ -167,6 +174,7 @@ export default function WeekCard({
             </button>
           </div>
 
+          {showTradeLog ? (
           <section className="trade-log">
             <div className="trade-log__head">
               <div>
@@ -389,6 +397,7 @@ export default function WeekCard({
               )}
             </div>
           </section>
+          ) : null}
         </div>
       </div>
     </article>
