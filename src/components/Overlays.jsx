@@ -303,10 +303,10 @@ export function CoachDrawer({
 
 export function CoachLauncher({ onClick }) {
   return (
-    <button type="button" className="coach-launcher pulse" onClick={onClick}>
+    <button type="button" className="coach-launcher pulse" onClick={onClick} aria-label="Ask coach" title="Ask coach">
       <span className="coach-launcher__glow" />
       <span className="coach-launcher__icon">⚡</span>
-      <span>ASK COACH</span>
+      <span className="coach-launcher__label">ASK COACH</span>
     </button>
   );
 }
