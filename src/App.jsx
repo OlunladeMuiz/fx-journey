@@ -1,14 +1,15 @@
 import React, { useEffect, useRef, useState } from "react";
 import { CoachDrawer, CoachLauncher, QuizModal } from "./components/Overlays";
 import { BottomNav, DashboardView, JournalView, PatternLibraryView, PhaseOverviewView, PhaseView, WeekDetailView } from "./components/Routes";
-import { FooterBar, SplashScreen, TickerBar } from "./components/Chrome";
+import { FooterBar, SplashScreen, ThemeToggle, TickerBar } from "./components/Chrome";
 import { PHASES, PATTERN_LIBRARY, STORAGE_KEYS, TICKER_ITEMS, WEEKS } from "./data/curriculum";
-import { dateKey } from "./lib/date";
 import { conceptKey, getContinueWeek, getCurrentWeekLabel, getRecentCompletedConcepts, getWeekById, totalProgress, weekProgress } from "./lib/progress";
-import { calculateTradeMetrics, toNumber } from "./lib/trades";
+import { calculateTradeMetrics } from "./lib/trades";
+import { createJournalEntryFromDraft, createTradeEntryFromDraft, normalizeStoredTradeEntry, sortEntriesDesc } from "./lib/entryRecords";
 import { createFallbackQuiz, fallbackCoachMessage, fetchAnthropicCoachReply, fetchAnthropicQuiz, fetchQuizMotivation, makeCoachSystemPrompt } from "./lib/ai";
 import { resolveRoute, withQuery } from "./lib/router";
-import { safeParseJSON, storageDelete, storageGet, storageKeys, storageSet } from "./hooks/useStorage";
+import { loadBooleanMap, loadJsonCollection, loadNumberMap } from "./lib/persistenceMaps";
+import { storageDelete, storageGet, storageKeys, storageSet } from "./hooks/useStorage";
 import { useStreak } from "./hooks/useStreak";
 
 const STARTER_COACH_MESSAGE = {
@@ -18,6 +19,19 @@ const STARTER_COACH_MESSAGE = {
 };
 
 const DEFAULT_WEEK_ID = WEEKS[0]?.id || "";
+
+function getInitialTheme() {
+  if (typeof document !== "undefined") {
+    const theme = document.documentElement.dataset.theme;
+    if (theme === "light" || theme === "dark") return theme;
+  }
+
+  if (typeof window !== "undefined" && window.matchMedia && window.matchMedia("(prefers-color-scheme: light)").matches) {
+    return "light";
+  }
+
+  return "dark";
+}
 
 function createDefaultTradeDrafts() {
   return WEEKS.reduce((acc, week) => {
@@ -80,196 +94,6 @@ function createQuizStateFromQuestions(week, questions, error = "") {
   };
 }
 
-function normalizeStoredTradeEntry(entry) {
-  const week = getWeekById(entry.weekId) || WEEKS[0];
-  const normalized = {
-    ...entry,
-    id: String(entry.id || `trade-${Date.now()}`),
-    weekId: week.id,
-    weekLabel: `Week ${week.week}`,
-    pair: entry.pair || "EUR/USD",
-    direction: entry.direction || "BUY",
-    entry: entry.entry === "" || entry.entry == null ? "" : entry.entry,
-    sl: entry.sl === "" || entry.sl == null ? "" : entry.sl,
-    tp: entry.tp === "" || entry.tp == null ? "" : entry.tp,
-    outcome: entry.outcome || "OPEN",
-    pattern: entry.pattern || entry.setup || week.title,
-    setup: entry.setup || entry.pattern || week.title,
-    notes: entry.notes || "",
-    screenshotUrl: entry.screenshotUrl || "",
-    createdAt: Number(entry.createdAt) || Date.now(),
-  };
-
-  const metrics = calculateTradeMetrics(normalized);
-  return {
-    ...normalized,
-    pips: Number.isFinite(Number(entry.pips)) ? Number(entry.pips) : metrics.pips,
-    rr: Number.isFinite(Number(entry.rr)) ? Number(entry.rr) : metrics.rr,
-  };
-}
-
-function buildTradeEntryFromDraft(draft, week) {
-  const base = {
-    pair: draft.pair,
-    direction: draft.direction || "BUY",
-    entry: draft.entry,
-    sl: draft.sl,
-    tp: draft.tp,
-    outcome: draft.outcome,
-    pattern: (draft.pattern || draft.setup || week.title).trim(),
-    setup: (draft.pattern || draft.setup || week.title).trim(),
-    notes: draft.notes || "",
-    screenshotUrl: draft.screenshotUrl || "",
-    weekId: week.id,
-  };
-
-  const metrics = calculateTradeMetrics(base);
-  return {
-    id: `trade-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`,
-    weekId: week.id,
-    weekLabel: `Week ${week.week}`,
-    pair: base.pair,
-    direction: base.direction,
-    entry: base.entry === "" ? "" : toNumber(base.entry),
-    sl: base.sl === "" ? "" : toNumber(base.sl),
-    tp: base.tp === "" ? "" : toNumber(base.tp),
-    outcome: base.outcome,
-    pattern: base.pattern,
-    setup: base.setup,
-    notes: base.notes.trim(),
-    screenshotUrl: base.screenshotUrl.trim ? base.screenshotUrl.trim() : base.screenshotUrl,
-    pips: metrics.pips,
-    rr: metrics.rr,
-    date: dateKey(),
-    createdAt: Date.now(),
-  };
-}
-
-function buildJournalEntryFromDraft(draft) {
-  const week = getWeekById(draft.weekId) || WEEKS[0];
-  return buildTradeEntryFromDraft(
-    {
-      pair: draft.pair,
-      direction: "BUY",
-      entry: draft.entry,
-      sl: draft.sl,
-      tp: draft.tp,
-      outcome: draft.outcome,
-      pattern: draft.setup,
-      setup: draft.setup,
-      notes: draft.notes,
-      screenshotUrl: draft.screenshotUrl,
-    },
-    week
-  );
-}
-
-function sortEntriesDesc(entries) {
-  return [...entries].sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
-}
-
-async function loadProgressMap() {
-  const keys = await storageKeys(STORAGE_KEYS.progressPrefix);
-  if (keys.length > 0) {
-    const map = {};
-    keys.forEach((key) => {
-      map[key.slice(STORAGE_KEYS.progressPrefix.length)] = true;
-    });
-    return map;
-  }
-
-  const legacyRaw = await storageGet(STORAGE_KEYS.legacyProgress);
-  const legacyMap = safeParseJSON(legacyRaw, {});
-  if (!legacyMap || typeof legacyMap !== "object") return {};
-
-  const next = {};
-  const writes = [];
-  Object.entries(legacyMap).forEach(([key, value]) => {
-    if (value) {
-      next[key] = true;
-      writes.push(storageSet(`${STORAGE_KEYS.progressPrefix}${key}`, "1"));
-    }
-  });
-  await Promise.all(writes);
-  return next;
-}
-
-async function loadTrades() {
-  const keys = await storageKeys(STORAGE_KEYS.journalPrefix);
-  if (keys.length > 0) {
-    const loaded = await Promise.all(
-      keys.map(async (key) => {
-        const raw = await storageGet(key);
-        const entry = safeParseJSON(raw, null);
-        if (!entry || typeof entry !== "object") return null;
-        return normalizeStoredTradeEntry({
-          ...entry,
-          id: entry.id || key.slice(STORAGE_KEYS.journalPrefix.length),
-        });
-      })
-    );
-    return sortEntriesDesc(loaded.filter(Boolean));
-  }
-
-  const legacyRaw = (await storageGet(STORAGE_KEYS.legacyTrades)) || (await storageGet(STORAGE_KEYS.legacyJournal));
-  const legacyEntries = safeParseJSON(legacyRaw, []);
-  if (!Array.isArray(legacyEntries)) return [];
-
-  const next = legacyEntries.map((entry) => normalizeStoredTradeEntry(entry));
-  await Promise.all(next.map((entry) => storageSet(`${STORAGE_KEYS.journalPrefix}${entry.id}`, JSON.stringify(entry))));
-  return sortEntriesDesc(next);
-}
-
-async function loadQuizScores() {
-  const keys = await storageKeys(STORAGE_KEYS.quizScorePrefix);
-  if (keys.length > 0) {
-    const map = {};
-    await Promise.all(
-      keys.map(async (key) => {
-        const raw = await storageGet(key);
-        const value = Number(safeParseJSON(raw, raw));
-        if (Number.isFinite(value)) {
-          map[key.slice(STORAGE_KEYS.quizScorePrefix.length)] = value;
-        }
-      })
-    );
-    return map;
-  }
-
-  const legacyRaw = await storageGet(STORAGE_KEYS.legacyQuizScores);
-  const legacyMap = safeParseJSON(legacyRaw, {});
-  if (!legacyMap || typeof legacyMap !== "object") return {};
-
-  const next = {};
-  const writes = [];
-  Object.entries(legacyMap).forEach(([weekId, score]) => {
-    const value = Number(score);
-    if (Number.isFinite(value)) {
-      next[weekId] = value;
-      writes.push(storageSet(`${STORAGE_KEYS.quizScorePrefix}${weekId}`, JSON.stringify(value)));
-    }
-  });
-  await Promise.all(writes);
-  return next;
-}
-
-async function loadPatternConfidence() {
-  const keys = await storageKeys(STORAGE_KEYS.patternConfidencePrefix);
-  const map = {};
-  if (keys.length === 0) return map;
-
-  await Promise.all(
-    keys.map(async (key) => {
-      const raw = await storageGet(key);
-      const value = Number(safeParseJSON(raw, raw));
-      if (Number.isFinite(value)) {
-        map[key.slice(STORAGE_KEYS.patternConfidencePrefix.length)] = value;
-      }
-    })
-  );
-  return map;
-}
-
 export default function App() {
   const initialRoute = typeof window !== "undefined" ? resolveRoute(window.location.pathname, window.location.search) : resolveRoute("/", "");
 
@@ -294,6 +118,8 @@ export default function App() {
   const [coachError, setCoachError] = useState("");
   const [coachResetNotice, setCoachResetNotice] = useState("");
   const [routeState, setRouteState] = useState(initialRoute);
+  const [theme, setTheme] = useState(getInitialTheme);
+  const [themeHydrated, setThemeHydrated] = useState(false);
 
   const conceptRefs = useRef({});
   const coachThreadRef = useRef(null);
@@ -310,6 +136,9 @@ export default function App() {
   const currentWeek = getCurrentWeekLabel(completed);
   const recentConcepts = getRecentCompletedConcepts(completed);
   const splashOverlay = splashVisible ? <SplashScreen /> : null;
+  const toggleTheme = () => {
+    setTheme((current) => (current === "light" ? "dark" : "light"));
+  };
   const searchResults = searchQuery.trim()
     ? WEEKS.flatMap((week) =>
         week.concepts
@@ -340,12 +169,47 @@ export default function App() {
     let cancelled = false;
 
     (async () => {
+      const savedTheme = await storageGet(STORAGE_KEYS.theme);
+      if (!cancelled && (savedTheme === "light" || savedTheme === "dark")) {
+        setTheme(savedTheme);
+      }
+      if (!cancelled) {
+        setThemeHydrated(true);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (typeof document === "undefined") return;
+
+    const root = document.documentElement;
+    root.dataset.theme = theme;
+    root.style.colorScheme = theme;
+
+    const themeColor = theme === "light" ? "#ffffff" : "#080c10";
+    const meta = document.querySelector('meta[name="theme-color"]');
+    if (meta) meta.setAttribute("content", themeColor);
+  }, [theme]);
+
+  useEffect(() => {
+    if (!themeHydrated) return;
+    void storageSet(STORAGE_KEYS.theme, theme);
+  }, [theme, themeHydrated]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    (async () => {
       try {
         const [progressMap, loadedTrades, loadedScores, loadedConfidence] = await Promise.all([
-          loadProgressMap(),
-          loadTrades(),
-          loadQuizScores(),
-          loadPatternConfidence(),
+          loadBooleanMap(STORAGE_KEYS.progressPrefix, STORAGE_KEYS.legacyProgress),
+          loadJsonCollection(STORAGE_KEYS.journalPrefix, normalizeStoredTradeEntry, [STORAGE_KEYS.legacyTrades, STORAGE_KEYS.legacyJournal]),
+          loadNumberMap(STORAGE_KEYS.quizScorePrefix, STORAGE_KEYS.legacyQuizScores),
+          loadNumberMap(STORAGE_KEYS.patternConfidencePrefix),
         ]);
 
         if (!cancelled) {
@@ -606,7 +470,7 @@ export default function App() {
     const week = getWeekById(journalDraft.weekId) || WEEKS[0];
     if (!week) return;
 
-    const entry = buildJournalEntryFromDraft(journalDraft);
+    const entry = createJournalEntryFromDraft(journalDraft);
     await persistTrades([...trades, entry]);
     await markActive();
     setJournalDraft(createJournalDraft(week.id));
@@ -626,7 +490,7 @@ export default function App() {
   async function submitTrade(event, week) {
     event.preventDefault();
     const draft = tradeDrafts[week.id];
-    const trade = buildTradeEntryFromDraft(draft, week);
+    const trade = createTradeEntryFromDraft(draft, week);
     await persistTrades([...trades, trade]);
     await markActive();
     setTradeDrafts((previous) => ({
@@ -957,6 +821,7 @@ export default function App() {
       <div className="fxj-bg" />
       <div className="fxj-noise" />
       <TickerBar items={TICKER_ITEMS} />
+      <ThemeToggle theme={theme} onToggle={toggleTheme} />
       {splashOverlay}
 
       {content}

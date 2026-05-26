@@ -203,6 +203,31 @@ export function SearchResults({ query, results, onSelect }) {
   );
 }
 
+export function ThemeToggle({ theme, onToggle }) {
+  const isLight = theme === "light";
+  const nextTheme = isLight ? "dark" : "white";
+  const stateLabel = isLight ? "White" : "Dark";
+
+  return (
+    <button
+      type="button"
+      className={joinClassNames("theme-toggle", isLight && "theme-toggle--light")}
+      onClick={onToggle}
+      aria-label={`Switch to ${nextTheme} theme`}
+      aria-pressed={isLight}
+      title={`Switch to ${nextTheme} theme`}
+    >
+      <span className="theme-toggle__copy">
+        <span className="theme-toggle__eyebrow">Appearance</span>
+        <span className="theme-toggle__state">{stateLabel}</span>
+      </span>
+      <span className="theme-toggle__rail" aria-hidden="true">
+        <span className="theme-toggle__thumb" />
+      </span>
+    </button>
+  );
+}
+
 export function PhaseSelector({ phases, activePhaseId, onSelect }) {
   return (
     <div className="phase-selector" role="tablist" aria-label="Phase selector">

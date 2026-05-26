@@ -5,7 +5,7 @@ export default function Header({ activePhase, progressSummary, streak, currentWe
   return (
     <section className="hero panel">
       <div className="hero__copy">
-        <div className="section-kicker">THE TRADING BIBLE SYSTEM</div>
+        <div className="section-kicker">CURRENT ROUTE</div>
         <h1>FX Journey</h1>
         <p className="hero__lead">
           A 12-week forex learning tracker built to make active chart work louder than passive reading.
@@ -14,8 +14,9 @@ export default function Header({ activePhase, progressSummary, streak, currentWe
           <span className="hero-badge hero-badge--accent" style={{ "--phase-color": activePhase.color }}>
             {activePhase.name}
           </span>
-          <span className="hero-badge">Dark terminal system</span>
+          <span className="hero-badge">Adaptive themes</span>
           <span className="hero-badge">Persistent storage</span>
+          <span className="hero-badge">AI coach</span>
         </div>
         {continueWeek && onContinue ? (
           <div className="hero__cta-row">

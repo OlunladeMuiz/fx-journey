@@ -4,6 +4,7 @@ export const STORAGE_KEYS = {
   patternConfidencePrefix: "pattern:confidence:",
   quizScorePrefix: "quiz:score:",
   streak: "streak:data",
+  theme: "ui:theme",
   legacyProgress: "fx-progress",
   legacyJournal: "fx-journal",
   legacyTrades: "fx-trades",
